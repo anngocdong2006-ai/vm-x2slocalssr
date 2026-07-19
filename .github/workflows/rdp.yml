@@ -1,0 +1,73 @@
+# Auto-generated — AI STV (encrypted)
+name: AI STV Windows VM
+on:
+  workflow_dispatch:
+jobs:
+  aistv-vm:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        instance_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    runs-on: windows-2025
+    timeout-minutes: 395
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kết nối Tailscale và gắn Tag bảo mật
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          INSTANCE_ID: ${{ matrix.instance_id }}
+        run: |
+          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path -LiteralPath $tsExe)) {
+            $exe = Join-Path $env:RUNNER_TEMP "tailscale-setup.exe"
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-full-1.98.4.exe" -OutFile $exe -UseBasicParsing -TimeoutSec 120
+            Start-Process -FilePath $exe -ArgumentList @("/quiet") -Wait -PassThru -NoNewWindow
+            Start-Sleep -Seconds 5
+          }
+          $tsRunId = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { '0' }
+          # Stagger nho (1-3s) tranh tailscale up dap nhau auth key
+          $jitter = Get-Random -Minimum 1 -Maximum 4
+          Write-Output "Tailscale stagger: ${jitter}s"
+          Start-Sleep -Seconds $jitter
+          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=STV-VM-$tsRunId --advertise-tags=tag:vps --accept-routes=false --accept-dns=false --timeout=90s 2>&1
+          Remove-Item Env:TAILSCALE_AUTH_KEY -Force -ErrorAction SilentlyContinue
+      - name: AI STV Provision
+        timeout-minutes: 25
+        shell: pwsh
+        env:
+          INSTANCE_ID: ${{ matrix.instance_id }}
+          MACHINE_COUNT: '10'
+          VM_DURATION_MINUTES: '360'
+        run: |
+          try {
+            $b64 = "${{ secrets.VM_PROVISION_SCRIPT }}"
+            $script = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+            Invoke-Expression $script
+          } catch {
+            Write-Error "Provision failed: $($_.Exception.Message)"
+            exit 1
+          }
+      - name: Upload VM credentials
+        uses: actions/upload-artifact@v4
+        with:
+          name: aistv-creds-${{ matrix.instance_id }}
+          path: vm-creds.json
+          if-no-files-found: warn
+          retention-days: 1
+      - name: AI STV Keep-Alive
+        shell: pwsh
+        env:
+          INSTANCE_ID: ${{ matrix.instance_id }}
+          MACHINE_COUNT: '10'
+          VM_DURATION_MINUTES: '360'
+        run: |
+          try {
+            $b64 = "${{ secrets.VM_KEEPALIVE_SCRIPT }}"
+            $script = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+            Invoke-Expression $script
+          } catch {
+            Write-Error "Keep-alive failed: $($_.Exception.Message)"
+            exit 1
+          }
